@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Affective Game Loop v3.0 - FACS & Dynamics</title>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    
+    <style>
+        /* --- 微表情指示器样式 --- */
+        :root {
+            --primary-color: #00ff41;
+            --joy-color: #ffcc00;
+            --anger-color: #ff3333;
+            --sad-color: #33ccff;
+            --bg-color: #0d0d0d;
+            --panel-bg: rgba(0, 20, 0, 0.9);
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--primary-color);
+            font-family: 'Share Tech Mono', monospace;
+            margin: 0;
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* 扫描线效果 */
+        body::after {
+            content: " ";
+            display: block;
+            position: absolute;
+            top: 0; left: 0; bottom: 0; right: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            z-index: 10;
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+        }
+
+        .hud-container {
+            position: relative;
+            width: 1280px;
+            height: 720px;
+            border: 2px solid var(--primary-color);
+            box-shadow: 0 0 20px var(--primary-color);
+            background: #000;
+        }
+
+        video {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            opacity: 0.4;
+            filter: grayscale(100%) contrast(1.2);
+        }
+
+        canvas {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1);
+        }
+
+        .panel {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 340px;
+            background: var(--panel-bg);
+            border: 1px solid var(--primary-color);
+            padding: 20px;
+            z-index: 25;
+        }
+
+        h2 { margin-top: 0; border-bottom: 1px solid var(--primary-color); padding-bottom: 10px; font-size: 18px; }
+        
+        .metric { margin-bottom: 15px; }
+        .label { display: flex; justify-content: space-between; margin-bottom: 3px; font-size: 14px; }
+        .bar-bg { width: 100%; height: 8px; background: #333; border: 1px solid #555; }
+        .bar-fill { height: 100%; width: 0%; transition: width 0.05s linear; } /* 响应速度加快 */
+
+        .bar-fear { background: var(--primary-color); }
+        .bar-joy { background: var(--joy-color); }
+        .bar-anger { background: var(--anger-color); }
+        .bar-sad { background: var(--sad-color); }
+
+        .status-box {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px dashed var(--primary-color);
+            text-align: center;
+        }
+        #dominant-emotion { font-size: 1.6em; font-weight: bold; color: #fff; text-shadow: 0 0 5px #fff; }
+        
+        /* 微表情/FACS 展示 */
+        .details-box {
+            margin-top: 15px;
+            font-size: 12px;
+            color: #aaa;
+            border-top: 1px solid #333;
+            padding-top: 10px;
+        }
+        .facs-row { display: flex; justify-content: space-between; margin-bottom: 2px; }
+
+        /* 微表情警报 */
+        #micro-alert {
+            display: none;
+            color: #ff003c;
+            font-weight: bold;
+            animation: blink 0.2s infinite;
+        }
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0; } 100% { opacity: 1; } }
+
+        .system-info {
+            position: absolute;
+            top: 20px; left: 20px;
+            color: rgba(0, 255, 65, 0.7);
+            z-index: 5;
+            line-height: 1.5;
+        }
+
+        #loader {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 50;
+            flex-direction: column;
+        }
+        .spinner {
+            width: 50px; height: 50px;
+            border: 5px solid #333;
+            border-top: 5px solid var(--primary-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <div id="loader">
+        <div class="spinner"></div>
+        <p>INITIALIZING FACS ENGINE v3.0...</p>
+    </div>
+
+    <div class="hud-container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+
+        <div class="system-info">
+            <div>SYSTEM: ONLINE</div>
+            <div>FPS: <span id="fps-counter">0</span></div>
+            <div>FILTER: <span style="color:#00ff41">ONE EURO (ACTIVE)</span></div>
+        </div>
+
+        <div class="panel">
+            <h2>EMOTION SPECTRUM (FACS)</h2>
+            
+            <div class="metric">
+                <div class="label">
+                    <span style="color:var(--primary-color)">FEAR/SURPRISE (AU1+2+5)</span> 
+                    <span id="val-fear">0%</span>
+                </div>
+                <div class="bar-bg"><div id="bar-fear" class="bar-fill bar-fear"></div></div>
+            </div>
+
+            <div class="metric">
+                <div class="label">
+                    <span style="color:var(--joy-color)">JOY (AU6+12)</span> 
+                    <span id="val-joy">0%</span>
+                </div>
+                <div class="bar-bg"><div id="bar-joy" class="bar-fill bar-joy"></div></div>
+            </div>
+
+            <div class="metric">
+                <div class="label">
+                    <span style="color:var(--anger-color)">ANGER (AU4+7)</span> 
+                    <span id="val-anger">0%</span>
+                </div>
+                <div class="bar-bg"><div id="bar-anger" class="bar-fill bar-anger"></div></div>
+            </div>
+
+            <div class="metric">
+                <div class="label">
+                    <span style="color:var(--sad-color)">SADNESS (AU1+15)</span> 
+                    <span id="val-sad">0%</span>
+                </div>
+                <div class="bar-bg"><div id="bar-sad" class="bar-fill bar-sad"></div></div>
+            </div>
+
+            <div class="status-box">
+                <div style="font-size: 12px; color:#888;">DOMINANT STATE</div>
+                <div id="dominant-emotion">NEUTRAL</div>
+                <div id="micro-alert">⚠ MICRO-EXPRESSION DETECTED ⚠</div>
+            </div>
+
+            <div class="details-box">
+                <div style="margin-bottom:5px; color:#fff;">ACTIVE AUs (Top 3):</div>
+                <div id="au-debug">WAITING FOR DATA...</div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // 使用原生 WebSocket 连接
+        const socket = new WebSocket('ws://localhost:3000');
+
+        socket.onopen = () => {
+        console.log(">>> 已连接到游戏服务器");
+        };
+    
+        import {
+            FilesetResolver,
+            FaceLandmarker,
+            DrawingUtils
+        } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0";
+
+        // --- 1.：One Euro Filter (一欧元滤波器) ---
+        // 报告来源心理学家保罗·艾克曼 ：简单的平均无法兼顾“静止时的稳定”和“运动时的快速”。
+        // 这个滤波器会动态调整：由于你表情变化快时，它会减少平滑，让你捕捉到微表情；静止时增加平滑，消除抖动。
+        class OneEuroFilter {
+            constructor(minCutoff = 1.0, beta = 0.0, dCutoff = 1.0) {
+                this.minCutoff = minCutoff; // 最小截止频率（静止时的平滑度）
+                this.beta = beta;           // 速度系数（运动时的灵敏度，值越大越灵敏）
+                this.dCutoff = dCutoff;     
+                this.xPrev = null;
+                this.dxPrev = null;
+                this.tPrev = null;
+            }
+
+            filter(t, x) {
+                if (this.tPrev === null) {
+                    this.xPrev = x;
+                    this.dxPrev = 0;
+                    this.tPrev = t;
+                    return x;
+                }
+
+                const dt = (t - this.tPrev) / 1000; // 转秒
+                this.tPrev = t;
+
+                // 计算信号变化速度 (Derivative)
+                const alphaD = this.smoothingFactor(dt, this.dCutoff);
+                const dx = (x - this.xPrev) / dt;
+                const dxSmoothed = this.exponentialSmoothing(alphaD, dx, this.dxPrev);
+
+                // 根据速度动态计算截止频率 [cite: 101]
+                // 速度越快，cutoff越高，延迟越低
+                const cutoff = this.minCutoff + this.beta * Math.abs(dxSmoothed);
+                const alpha = this.smoothingFactor(dt, cutoff);
+                const xSmoothed = this.exponentialSmoothing(alpha, x, this.xPrev);
+
+                this.xPrev = xSmoothed;
+                this.dxPrev = dxSmoothed;
+                return xSmoothed;
+            }
+
+            smoothingFactor(dt, cutoff) {
+                const r = 2 * Math.PI * cutoff * dt;
+                return r / (r + 1);
+            }
+
+            exponentialSmoothing(alpha, x, xPrev) {
+                return alpha * x + (1 - alpha) * xPrev;
+            }
+        }
+
+        const video = document.getElementById("webcam");
+        const canvasElement = document.getElementById("output_canvas");
+        const canvasCtx = canvasElement.getContext("2d");
+        const fpsCounter = document.getElementById("fps-counter");
+        const domEmotion = document.getElementById("dominant-emotion");
+        const microAlert = document.getElementById("micro-alert");
+        const auDebug = document.getElementById("au-debug");
+
+        let faceLandmarker;
+        let lastVideoTime = -1;
+        let lastTime = 0;
+        
+        // 为每一个我们关心的Blendshape创建一个滤波器实例
+        // Beta值设为 1.5 是为了在捕捉微表情时反应够快 [cite: 107]
+        const filters = {}; 
+        const blendshapeNames = [
+            "browInnerUp", "browDownLeft", "browDownRight", "browOuterUpLeft", "browOuterUpRight",
+            "eyeWideLeft", "eyeWideRight", "eyeSquintLeft", "eyeSquintRight",
+            "cheekSquintLeft", "cheekSquintRight",
+            "mouthSmileLeft", "mouthSmileRight", "mouthFrownLeft", "mouthFrownRight",
+            "mouthPressLeft", "mouthPressRight"
+        ];
+        
+        blendshapeNames.forEach(name => {
+            filters[name] = new OneEuroFilter(1.0, 1.5); 
+        });
+
+        // 记录上一帧的情绪值，用于检测突变（微表情）
+        let prevEmotionVector = { joy:0, anger:0, sad:0, fear:0 };
+
+        async function createFaceLandmarker() {
+            const filesetResolver = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
+            );
+            faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
+                    delegate: "GPU"
+                },
+                outputFaceBlendshapes: true,
+                runningMode: "VIDEO",
+                numFaces: 1
+            });
+            document.getElementById("loader").style.display = "none";
+            enableCam();
+        }
+
+        function enableCam() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", predictWebcam);
+            });
+        }
+
+        async function predictWebcam() {
+            let startTimeMs = performance.now();
+
+            if (video.videoWidth && canvasElement.width !== video.videoWidth) {
+                canvasElement.width = video.videoWidth;
+                canvasElement.height = video.videoHeight;
+            }
+
+            if (lastVideoTime !== video.currentTime) {
+                lastVideoTime = video.currentTime;
+                const results = faceLandmarker.detectForVideo(video, startTimeMs);
+
+                canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+                if (results.faceLandmarks.length > 0) {
+                    const drawingUtils = new DrawingUtils(canvasCtx);
+                    for (const landmarks of results.faceLandmarks) {
+                        drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_TESSELATION, { color: "#C0C0C020", lineWidth: 1 });
+                        drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_RIGHT_EYE, { color: "#00FF41", lineWidth: 1 });
+                        drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_LEFT_EYE, { color: "#00FF41", lineWidth: 1 });
+                        // 报告建议关注眉毛和嘴巴的细微变化 [cite: 20, 50]
+                        drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_RIGHT_EYEBROW, { color: "#FFCC00", lineWidth: 2 });
+                        drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_LEFT_EYEBROW, { color: "#FFCC00", lineWidth: 2 });
+                        drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_LIPS, { color: "#FF003C", lineWidth: 2 });
+                    }
+                    
+                    processBlendshapes(results.faceBlendshapes[0].categories, startTimeMs);
+                }
+            }
+
+            window.requestAnimationFrame(predictWebcam);
+            
+            // FPS 计算
+            const now = performance.now();
+            fpsCounter.innerText = Math.round(1000 / (now - lastTime));
+            lastTime = now;
+        }
+
+        function processBlendshapes(blendshapes, timeStamp) {
+            // 获取并滤波数据
+            const getRaw = (name) => blendshapes.find(s => s.categoryName === name)?.score || 0;
+            const scores = {};
+            
+            blendshapeNames.forEach(name => {
+                const rawVal = getRaw(name);
+                // 应用 One Euro Filter 进行平滑 [cite: 108]
+                scores[name] = filters[name].filter(timeStamp, rawVal);
+            });
+
+            analyzeEmotions(scores);
+        }
+
+        // --- 2. 情绪分析基于FACS映射 ---
+        // 报告 [cite: 65, 66] 提供了明确的 AU (Action Unit) 映射表
+        function analyzeEmotions(s) {
+            
+            // 辅助：取左右平均值
+            const avg = (key) => (s[key + 'Left'] + s[key + 'Right']) / 2;
+
+            // --- A. 映射 AU (Action Units) ---
+            const AU1  = s.browInnerUp;              // 悲伤的核心
+            const AU2  = avg('browOuterUp');         // 惊讶/质疑
+            const AU4  = avg('browDown');            // 愤怒/专注 [cite: 36]
+            const AU5  = avg('eyeWide');             // 惊恐/瞪眼
+            const AU6  = avg('cheekSquint');         // 杜兴式微笑(真笑)标志 
+            const AU7  = avg('eyeSquint');           // 愤怒时的眼睑收紧
+            const AU12 = avg('mouthSmile');          // 嘴角拉伸
+            const AU15 = avg('mouthFrown');          // 悲伤的嘴角下撇 
+            const AU24 = avg('mouthPress');          // 抿嘴（克制的愤怒）
+
+            // --- B. 组合逻辑 (FACS Rules) ---
+
+            // Joy (开心): AU6 (脸颊) + AU12 (嘴角)
+            // 报告特别指出，没有AU6的笑可能是假笑，所以AU6权重很高
+            let joyScore = (AU12 * 0.6 + AU6 * 0.4); 
+
+            // Anger (愤怒): AU4 (皱眉) + AU7 (眯眼) + AU24 (抿嘴)
+            // AU4是核心特征 [cite: 36]
+            let angerScore = (AU4 * 0.5 + AU7 * 0.3 + AU24 * 0.2);
+
+            // Sadness (悲伤): AU1 (眉心上抬) + AU15 (嘴角下撇)
+            // 这是很难伪造的组合 
+            let sadScore = (AU1 * 0.5 + AU15 * 0.5);
+
+            // Fear/Surprise (恐惧/惊讶): AU5 (睁眼) + AU1/AU2 (抬眉)
+            // 报告指出，恐惧时通常伴随AU1+2+4+5，惊讶是AU1+2+5 [cite: 43]
+            // 这里我们做一个简化的"警觉/恐惧"指标
+            let fearScore = (AU5 * 0.5 + (AU1 + AU2) * 0.5);
+
+            // 放大微弱信号（微表情通常强度低）
+            joyScore = Math.min(joyScore * 1.4, 1.0);
+            angerScore = Math.min(angerScore * 1.6, 1.0); // 愤怒通常比较压抑，系数给高点
+            sadScore = Math.min(sadScore * 1.5, 1.0);
+            fearScore = Math.min(fearScore * 1.4, 1.0);
+
+            // --- C. 微表情/突变检测 (Velocity Check) ---
+            // 报告提到利用动力学特征（速度）检测微表情 
+            // 如果某一帧的情绪值相对于上一帧变化极大，说明可能有微表情
+            const velocity = Math.abs(joyScore - prevEmotionVector.joy) + 
+                             Math.abs(angerScore - prevEmotionVector.anger) +
+                             Math.abs(sadScore - prevEmotionVector.sad);
+            
+            // 更新上一帧
+            prevEmotionVector = { joy: joyScore, anger: angerScore, sad: sadScore, fear: fearScore };
+
+            // 阈值设为0.15，如果瞬间变化超过这个值，触发警报
+            if (velocity > 0.15) {
+                microAlert.style.display = "block";
+                setTimeout(() => microAlert.style.display = "none", 500); // 闪烁一下
+            }
+
+            // --- UI 更新 ---
+            updateBar("bar-fear", "val-fear", fearScore);
+            updateBar("bar-joy", "val-joy", joyScore);
+            updateBar("bar-anger", "val-anger", angerScore);
+            updateBar("bar-sad", "val-sad", sadScore);
+
+            // 判定主情绪
+            const states = [
+                { name: "FEAR / ALERT", val: fearScore, color: "#00ff41" },
+                { name: "JOY", val: joyScore, color: "#ffcc00" },
+                { name: "ANGER", val: angerScore, color: "#ff3333" },
+                { name: "SADNESS", val: sadScore, color: "#33ccff" }
+            ];
+            let maxEmotion = states.reduce((prev, current) => (prev.val > current.val) ? prev : current);
+            
+            if (maxEmotion.val > 0.20) { // 阈值降低，因为微表情强度低
+                domEmotion.innerText = maxEmotion.name;
+                domEmotion.style.color = maxEmotion.color;
+                domEmotion.style.textShadow = `0 0 10px ${maxEmotion.color}`;
+            } else {
+                domEmotion.innerText = "NEUTRAL";
+                domEmotion.style.color = "#888";
+                domEmotion.style.textShadow = "none";
+            }
+
+            // Debug: 显示当前最活跃的AU，帮助理解数据
+            const activeAUs = [
+                {id: "AU1 (Inner Brow)", val: AU1},
+                {id: "AU4 (Brow Down)", val: AU4},
+                {id: "AU6 (Cheek)", val: AU6},
+                {id: "AU12 (Smile)", val: AU12},
+                {id: "AU15 (Frown)", val: AU15}
+            ].sort((a,b) => b.val - a.val).slice(0,3);
+
+            auDebug.innerHTML = activeAUs.map(a => 
+                `<div class="facs-row"><span>${a.id}</span><span>${(a.val*100).toFixed(0)}%</span></div>`
+            ).join('');
+            if (socket.readyState === WebSocket.OPEN) {
+                const payload = {
+                // 为了 Godot 解析方便，我们把最重要的 joy 值放在最外层
+                joy_value: joyScore, 
+                anger_value: angerScore,
+                data: {
+                    timestamp: Date.now(),
+                    emotions: { joy: joyScore, anger: angerScore }
+            },
+            is_micro_expression: velocity > 0.15
+        };
+        
+        // 发送纯文本 JSON 字符串
+        socket.send(JSON.stringify(payload));
+            }
+        }
+
+        function updateBar(barId, textId, value) {
+            const percent = Math.round(value * 100);
+            document.getElementById(barId).style.width = `${percent}%`;
+            document.getElementById(textId).innerText = `${percent}%`;
+        }
+
+        createFaceLandmarker();
+    </script>
+</body>
+</html>
